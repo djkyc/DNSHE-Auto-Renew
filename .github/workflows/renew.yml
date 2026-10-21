@@ -31,7 +31,8 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt
-        - name: Check WeChat configuration
+        
+      - name: Check WeChat configuration
         env:
           WECHAT_API_URL: ${{ secrets.WECHAT_API_URL }}
           WECHAT_AUTH_TOKEN: ${{ secrets.WECHAT_AUTH_TOKEN }}
