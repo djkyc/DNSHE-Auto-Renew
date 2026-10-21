@@ -31,6 +31,22 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt
+        - name: Check WeChat configuration
+        env:
+          WECHAT_API_URL: ${{ secrets.WECHAT_API_URL }}
+          WECHAT_AUTH_TOKEN: ${{ secrets.WECHAT_AUTH_TOKEN }}
+        run: |
+          if [ -z "$WECHAT_API_URL" ]; then
+            echo "::error::WECHAT_API_URL 为空，请检查 GitHub Actions Secrets"
+          else
+            echo "WECHAT_API_URL：已读取"
+          fi
+
+          if [ -z "$WECHAT_AUTH_TOKEN" ]; then
+            echo "::error::WECHAT_AUTH_TOKEN 为空，请检查 GitHub Actions Secrets"
+          else
+            echo "WECHAT_AUTH_TOKEN：已读取"
+          fi
 
       - name: Run renew script
         env:
