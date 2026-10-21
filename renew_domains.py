@@ -751,7 +751,11 @@ class WeChatNotifier:
                     "Authorization": self.auth_token,
                     "Content-Type": "application/json",
                 },
-                json={"content": content},
+                # 【修改这里】：加上接口需要的 title 字段
+                json={
+                    "title": "DNSHE 域名自动续期报告",
+                    "content": content
+                },
                 timeout=REQUEST_TIMEOUT,
             )
             if resp.status_code == 200:
