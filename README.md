@@ -96,6 +96,23 @@
 | `TELEGRAM_BOT_TOKEN` | (可选) Telegram Bot Token | `123456:ABC-DEF...` |
 | `TELEGRAM_CHAT_ID`   | (可选) Telegram 目标聊天 ID   | `123456789`         |
 
+DNSHE_ACCOUNTS，值为 JSON 数组：
+```
+[
+  {
+    "name": "账号1",
+    "api_key": "第一个账号的API_KEY",
+    "api_secret": "第一个账号的API_SECRET"
+  },
+  {
+    "name": "账号2",
+    "api_key": "第二个账号的API_KEY",
+    "api_secret": "第二个账号的API_SECRET"
+  }
+]
+```
+
+
 > 只要有一个通知通道送达即视为成功；所有通道都失败才会让工作流标红。
 
 #### 可选配置（Repository variables，非敏感）
