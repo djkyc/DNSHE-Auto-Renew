@@ -745,9 +745,8 @@ class WeChatNotifier:
             return True
 
         try:
-            # ======= 在这里自定义您的“告警内容”标题 =======
-            custom_title = "DNSHE域名多账号自动续期报告"  # 您可以改成任何想显示的内容，比如："🔐 域名续期状态通知"
-            # ===============================================
+            # 自定义显示在微信卡片“告警内容”里的摘要文字
+            custom_summary = "DNSHE 域名自动续期报告"
 
             resp = self.session.post(
                 self.api_url,
@@ -755,10 +754,14 @@ class WeChatNotifier:
                     "Authorization": self.auth_token,
                     "Content-Type": "application/json",
                 },
+                # 【多字段兼容】：把所有可能的摘要字段名全部带上
                 json={
                     "token": self.auth_token,
-                    "title": custom_title,  # 使用自定义的标题
-                    "content": content      # 完整的详细报告
+                    "title": custom_summary,
+                    "text": custom_summary,
+                    "summary": custom_summary,
+                    "description": custom_summary,
+                    "content": content
                 },
                 timeout=REQUEST_TIMEOUT,
             )
