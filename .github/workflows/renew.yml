@@ -34,17 +34,19 @@ jobs:
 
       - name: Run renew script
         env:
-          # 以下变量需在仓库 Settings -> Secrets and variables -> Actions 中配置
-          # Secrets（敏感，不可回显）
-          DNSHE_API_KEY: ${{ secrets.DNSHE_API_KEY }}
-          DNSHE_API_SECRET: ${{ secrets.DNSHE_API_SECRET }}
+          # DNSHE 多账号配置（必需）
+          DNSHE_ACCOUNTS: ${{ secrets.DNSHE_ACCOUNTS }}
+
+          # 通知渠道
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           PUSHPLUS_TOPIC: ${{ secrets.PUSHPLUS_TOPIC }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          # Variables（可选，非敏感配置；不配则用脚本默认值）
+
+          # 可选配置
           DNSHE_RENEW_THRESHOLD_DAYS: ${{ vars.DNSHE_RENEW_THRESHOLD_DAYS }}
           DNSHE_MIN_INTERVAL: ${{ vars.DNSHE_MIN_INTERVAL }}
           DNSHE_TZ_OFFSET: ${{ vars.DNSHE_TZ_OFFSET }}
           DNSHE_API_BASE_URL: ${{ vars.DNSHE_API_BASE_URL }}
+
         run: python renew_domains.py
