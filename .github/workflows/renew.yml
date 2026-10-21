@@ -61,9 +61,9 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
           # 可选配置（如果这些也存在了 Secrets 里面，请把下面的 vars 也改成 secrets）
-          DNSHE_RENEW_THRESHOLD_DAYS: ${{ vars.DNSHE_RENEW_THRESHOLD_DAYS }}
-          DNSHE_MIN_INTERVAL: ${{ vars.DNSHE_MIN_INTERVAL }}
-          DNSHE_TZ_OFFSET: ${{ vars.DNSHE_TZ_OFFSET }}
-          DNSHE_API_BASE_URL: ${{ vars.DNSHE_API_BASE_URL }}
+          DNSHE_RENEW_THRESHOLD_DAYS: ${{ secrets.DNSHE_RENEW_THRESHOLD_DAYS }}
+          DNSHE_MIN_INTERVAL: ${{ secrets.DNSHE_MIN_INTERVAL }}
+          DNSHE_TZ_OFFSET: ${{ secrets.DNSHE_TZ_OFFSET }}
+          DNSHE_API_BASE_URL: ${{ secrets.DNSHE_API_BASE_URL }}
 
         run: python renew_domains.py
