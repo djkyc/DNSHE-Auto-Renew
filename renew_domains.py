@@ -319,272 +319,407 @@ class DnsheClient:
 
     @staticmethod
     def _payload(resp, what):
-        """解析响应体；解析不了时抛出带状态码的接口异常。"""
+        """解析响应体；解析不了时抛出带状态码的 ApiError（而非 HTTPError）。"""
         try:
-            payload = resp.json()
+            data = resp.json()
         except ValueError:
             raise ApiError(
-                f"{what}返回非 JSON 内容 (HTTP {resp.status_code}): "
-                f"{(resp.text or '')[:300]}"
-            ) from None
+                f"{what}返回非 JSON 内容 (HTTP {resp.status_code}): {(resp.text or '')[:200]}"
+            )
+        if not isinstance(data, dict):
+            raise ApiError(f"{what}响应格式异常: {str(data)[:200]}")
+        return data
 
-        if not isinstance(payload, dict):
-            raise ApiError(f"{what}返回格式异常: 预期 JSON 对象，实际为 {type(payload).__name__}")
+    @classmethod
+    def _checked(cls, resp, what):
+        """统一处理一次响应：body 里的 error_code 优先于 HTTP 状态码。
+
+        文档明确写着 error_code 是「Stable error code (recommended for
+        business-side processing)」，所以不能先 raise_for_status 再解析——
+        那样只会剩下一句「401 Client Error: Unauthorized」，把
+        auth_invalid_credentials / rate_limit_exceeded 这类可行动信息全丢掉。
+        """
+        try:
+            data = cls._payload(resp, what)
+        except ApiError as parse_error:
+            if resp.status_code >= 400:
+                raise ApiError(
+                    f"{what}失败 (HTTP {resp.status_code}): "
+                    f"{(resp.text or '')[:200] or '空响应'}"
+                )
+            raise parse_error
+
+        if is_failure_payload(data):
+            raise ApiError(f"{what}返回失败: {describe_error(data)}")
 
         if resp.status_code >= 400:
-            detail = describe_error(payload, fallback=(resp.text or '')[:200])
-            raise ApiError(f"{what}失败 (HTTP {resp.status_code}): {detail}")
+            # 状态码是错的但 body 没带错误结构，仍然不能当成功
+            raise ApiError(f"{what}失败 (HTTP {resp.status_code}): {str(data)[:200]}")
+        return data
 
-        if is_failure_payload(payload):
-            raise ApiError(f"{what}失败: {describe_error(payload)}")
-
-        return payload
-
-    def _request(self, session, method, params=None, body=None, what='DNSHE API'):
+    def get(self, query, what):
         self.throttle.wait()
-        url = self.config.base_url
-        try:
-            resp = session.request(
-                method,
-                url,
-                params=params,
-                json=body,
-                headers=self._headers(),
-                timeout=REQUEST_TIMEOUT,
-            )
-        except requests.RequestException as e:
-            raise ApiError(f"{what}网络请求失败: {e}") from e
-
-        return self._payload(resp, what)
-
-    def fetch_subdomains(self):
-        """分页读取全部子域名；防止服务端忽略 page 参数造成无限循环。"""
-        all_items = []
-        seen_ids = set()
-
-        for page in range(1, MAX_PAGES + 1):
-            params = {
-                "action": "list_subdomains",
-                "page": page,
-                "per_page": PAGE_SIZE,
-                "fields": LIST_FIELDS,
-            }
-            payload = self._request(
-                self.list_session, "GET", params=params, what=f"获取域名列表第 {page} 页"
-            )
-
-            data = payload.get("data")
-            if isinstance(data, dict):
-                items = data.get("items")
-                if items is None:
-                    items = data.get("subdomains")
-                meta = data.get("pagination") or data.get("meta") or {}
-            elif isinstance(data, list):
-                items = data
-                meta = {}
-            else:
-                items = payload.get("items") or payload.get("subdomains") or []
-                meta = payload.get("pagination") or payload.get("meta") or {}
-
-            if not isinstance(items, list):
-                raise ApiError(f"域名列表第 {page} 页结构异常：items 不是数组")
-
-            if not items:
-                break
-
-            new_items = []
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                item_id = parse_id(item.get("id"))
-                if item_id is not None:
-                    if item_id in seen_ids:
-                        continue
-                    seen_ids.add(item_id)
-                new_items.append(item)
-
-            all_items.extend(new_items)
-
-            # 先看服务端明确的分页元数据。
-            total_pages = meta.get("total_pages") or meta.get("last_page")
-            current_page = meta.get("current_page") or page
-            if total_pages is not None:
-                try:
-                    if int(current_page) >= int(total_pages):
-                        break
-                    continue
-                except (TypeError, ValueError):
-                    pass
-
-            # 没有分页元数据时，短页通常表示结束。
-            if len(items) < PAGE_SIZE:
-                break
-        else:
-            raise ApiError(f"域名列表超过最大分页数 {MAX_PAGES}，为避免漏数据已停止")
-
-        return all_items
+        resp = self.list_session.get(f"{self.config.base_url}{query}",
+                                     headers=self._headers(), timeout=REQUEST_TIMEOUT,
+                                     allow_redirects=False)
+        return self._checked(resp, what)
 
     def fetch_quota(self):
-        """查询账户积分；具体字段因后端版本可能不同，统一交给 quota_line 兼容。"""
-        payload = self._request(
-            self.list_session, "GET",
-            params={"action": "get_quota"},
-            what="查询账户积分",
-        )
-        data = payload.get("data")
-        return data if isinstance(data, dict) else payload
+        """查询账户积分。返回 quota 字典，失败由调用方决定是否致命。"""
+        data = self.get("&endpoint=quota", "积分接口")
+        quota = data.get('quota')
+        if not isinstance(quota, dict):
+            raise ApiError("积分接口响应缺少 quota 字段")
+        return quota
+
+    def fetch_subdomains(self):
+        """逐页拉取全部子域名。
+
+        list 接口 per_page 默认 200，不分页会静默丢掉后面的域名 —— 那正是
+        「报告显示一切正常但域名实际过期」这类故障的温床，所以必须翻完。
+        """
+        collected: List[Any] = []
+        seen_ids = set()
+        page = 1
+        reported_total = None
+
+        while page <= MAX_PAGES:
+            query = (
+                f"&endpoint=subdomains&action=list&fields={LIST_FIELDS}"
+                f"&page={page}&per_page={PAGE_SIZE}"
+            )
+            # 首页顺带要总数，用于最后的完整性校验；文档提示 include_total 会
+            # 多跑一次 COUNT，只在首页付这个成本。
+            if page == 1:
+                query += "&include_total=1"
+
+            data = self.get(query, "域名列表")
+
+            if 'subdomains' not in data:
+                raise ApiError(
+                    "域名列表响应缺少 subdomains 字段（接口可能已变更），"
+                    f"原始响应: {str(data)[:200]}"
+                )
+            batch = data['subdomains']
+            if not isinstance(batch, list):
+                raise ApiError(f"subdomains 字段不是列表: {str(batch)[:200]}")
+
+            reported_total = self._reported_total(data, reported_total, page)
+            self._check_page_count(data, batch, page)
+
+            # 服务端若忽略 page 参数会反复返回同一页，靠 id 去重防止无限累积
+            fresh = [item for item in batch if not self._already_seen(item, seen_ids)]
+            collected.extend(fresh)
+
+            if not self._has_more(data, batch, fresh):
+                break
+
+            next_page = self._next_page(data.get('pagination'), page)
+            if next_page is None:
+                # 服务端说还有下一页，却给不出能前进的页码：宁可失败告警，
+                # 也不能静默截断——漏掉的那批域名会一直不续期直到过期。
+                raise ApiError(
+                    f"域名列表分页异常：服务端标记 has_more=true，但第 {page} 页"
+                    f"未能给出可前进的页码（pagination={str(data.get('pagination'))[:120]}），"
+                    "已中止以免漏掉域名"
+                )
+            page = next_page
+        else:
+            raise ApiError(f"域名列表分页超过 {MAX_PAGES} 页，疑似接口异常，已中止")
+
+        self._verify_total(collected, reported_total)
+
+        if not collected:
+            # 空列表极可能是凭据失效或接口变更，绝不能当作"无需续期"；
+            # 但服务端明确给出 total=0 / count=0 时，那是真的没有域名。
+            if reported_total == 0:
+                print("账户下没有任何子域名，本次无需续期")
+                return []
+            raise ApiError("未获取到任何子域名，疑似凭据失效或接口变更，请人工核查")
+        return collected
+
+    @staticmethod
+    def _reported_total(data, current, page=1):
+        """读取服务端声明的「总数」，仅首页采信。
+
+        pagination.total 才是总数；顶层 count 是「本页条数」（实测：第 2 页
+        count=50、共 250 个域名），把它当总数会误报数量不一致，所以 count
+        只在首页且没有 total 时退而求其次。
+        """
+        pagination = data.get('pagination')
+        if isinstance(pagination, dict):
+            try:
+                total = int(pagination.get('total'))
+            except (TypeError, ValueError):
+                total = None
+            if total is not None and total >= 0:
+                return total
+        if page == 1:
+            try:
+                count = int(data.get('count'))
+            except (TypeError, ValueError):
+                count = None
+            if count is not None and count >= 0:
+                return count
+        return current
+
+    @staticmethod
+    def _check_page_count(data, batch, page):
+        """本页声明的 count 与实际条数对不上时告警（多为服务端截断）。"""
+        try:
+            declared = int(data.get('count'))
+        except (TypeError, ValueError):
+            return
+        if declared != len(batch):
+            warn(f"第 {page} 页声明 count={declared}，实际返回 {len(batch)} 条，"
+                 "疑似响应被截断")
+
+    @staticmethod
+    def _verify_total(collected, reported_total):
+        """用服务端总数校验是否漏收，不一致时告警（不中止，避免误伤）。"""
+        if reported_total is None:
+            return
+        if len(collected) != reported_total:
+            warn(f"域名数量不一致：服务端声明 {reported_total} 个，实际收到 "
+                 f"{len(collected)} 个，可能有域名未被处理，请人工核查")
+
+    @staticmethod
+    def _already_seen(item, seen_ids):
+        """按 id 去重；没有 id 的记录一律保留，交给后续逐条校验去报错。"""
+        if not isinstance(item, dict):
+            return False
+        item_id = item.get('id')
+        if item_id is None:
+            return False
+        if item_id in seen_ids:
+            return True
+        seen_ids.add(item_id)
+        return False
+
+    @staticmethod
+    def _has_more(data, batch, fresh):
+        """判断是否还有下一页。
+
+        文档只在「分页响应」里描述 pagination 字段，基础响应可能没有。
+        缺字段时不能想当然认为已经取完 —— 那会静默截断域名列表。
+        改用「本页是否装满」来推断，并要求本页至少有新记录才继续翻。
+        """
+        pagination = data.get('pagination')
+        if isinstance(pagination, dict) and 'has_more' in pagination:
+            return bool(pagination['has_more'])
+        return len(batch) >= PAGE_SIZE and bool(fresh)
+
+    @staticmethod
+    def _next_page(pagination, current):
+        """取下一页页码，异常值回退到 current+1；无法前进则返回 None。"""
+        raw = pagination.get('next_page') if isinstance(pagination, dict) else None
+        try:
+            candidate = current + 1 if raw is None else int(raw)
+        except (TypeError, ValueError):
+            candidate = current + 1
+        return candidate if candidate > current else None
 
     def renew(self, subdomain_id):
-        """提交续期请求。只在 connect/明确 429 时重试，避免重复扣积分。"""
-        payload = self._request(
-            self.renew_session, "POST",
-            body={"action": "renew_subdomain", "id": subdomain_id},
-            what=f"续期域名 ID {subdomain_id}",
+        """提交续期。返回解析后的响应体（可能是业务失败），仅传输层问题抛异常。
+
+        注意这里不能复用 _checked()：续期的 4xx（如 422 未到窗口）是预期内的
+        业务结果，要原样交给调用方渲染，而不是当异常抛出去。
+        """
+        self.throttle.wait()
+        resp = self.renew_session.post(
+            f"{self.config.base_url}&endpoint=subdomains&action=renew",
+            headers=self._headers(), json={"subdomain_id": subdomain_id},
+            timeout=REQUEST_TIMEOUT, allow_redirects=False,
         )
-        data = payload.get("data")
-        return data if isinstance(data, dict) else payload
+        # 不能直接 raise_for_status：422 renewal_not_yet_available 等业务错误
+        # 带着有用的 error_code，丢掉状态码之外的信息会让报告失去可读性。
+        try:
+            data = self._payload(resp, "续期接口")
+        except ApiError as parse_error:
+            # 解析失败时不要把原本更具体的 ApiError 换成 HTTPError
+            if resp.status_code >= 400:
+                raise ApiError(f"续期接口失败 (HTTP {resp.status_code}): "
+                               f"{(resp.text or '')[:200] or '空响应'}")
+            raise parse_error
+
+        if resp.status_code >= 500 and not is_failure_payload(data):
+            # 5xx 却给出成功结构，属于自相矛盾，按失败处理避免误报续期成功
+            raise ApiError(f"续期接口异常 (HTTP {resp.status_code}): {str(data)[:200]}")
+        return data
 
 
 @dataclass
 class DomainView:
-    subdomain_id: Optional[int]
+    """一条子域名记录的规范化视图，便于纯函数判定与测试。"""
     label: str
-    status: str
-    expires_raw: Any
-    expires_at: Optional[datetime]
-    never_expires: bool
-    days_remaining: Optional[int]
+    subdomain_id: Optional[int] = None
+    never_expires: bool = False
+    expires_raw: Optional[str] = None
+    expires_at: Optional[datetime] = None
+    days_remaining: Optional[int] = None
     problem: Optional[str] = None
+    status: Optional[str] = None
+
+    @property
+    def status_abnormal(self):
+        """状态不是 active/registered 时返回原始状态，否则返回 None。
+
+        实测线上返回的是 "Registered"（文档写 active），两种都算正常；
+        其余取值（suspended/expired/...）说明域名有问题，必须让人看见。
+        """
+        if not self.status:
+            return None
+        if str(self.status).strip().lower() in NORMAL_STATUSES:
+            return None
+        return str(self.status)
 
 
 def parse_expiry(value, tz):
-    """解析 DNSHE 常见到期时间格式，返回带指定时区的 datetime。"""
-    if value is None or not str(value).strip():
+    """解析到期时间，返回带时区的 datetime；失败返回 None（不抛异常）。
+
+    不带时区的字符串按 tz 解读；自带偏移的（ISO 8601）尊重其偏移。
+    """
+    if not isinstance(value, str) or not value.strip():
         return None
 
-    text = str(value).strip()
+    text = value.strip()
     for fmt in EXPIRY_FORMATS:
         try:
-            parsed = datetime.strptime(text, fmt)
-            return parsed.replace(tzinfo=tz)
+            return datetime.strptime(text, fmt).replace(tzinfo=tz)
         except ValueError:
             continue
 
+    iso_text = text[:-1] + '+00:00' if text.endswith('Z') else text
     try:
-        parsed = datetime.fromisoformat(text.replace('Z', '+00:00'))
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=tz)
-        return parsed.astimezone(tz)
+        parsed = datetime.fromisoformat(iso_text)
     except ValueError:
+        warn(f"无法解析到期时间 {value!r}")
         return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=tz)
 
 
 def inspect_domain(raw, index, now, tz):
-    """把 API 原始对象转成统一视图；字段异常显式报告，绝不静默跳过。"""
+    """把接口返回的一条记录转成 DomainView，任何字段异常都不得中断遍历。"""
+    position = f"<第{index + 1}条记录>"
     if not isinstance(raw, dict):
-        return DomainView(None, f"第 {index + 1} 条记录", "unknown", None,
-                          None, False, None, "域名记录不是 JSON 对象")
+        return DomainView(label=position, problem=f"记录格式异常: {str(raw)[:80]}")
 
-    subdomain_id = parse_id(raw.get("id"))
-    subdomain = raw.get("full_domain")
-    if not subdomain:
-        label_parts = [raw.get("subdomain"), raw.get("rootdomain")]
-        subdomain = ".".join(str(x) for x in label_parts if x)
-    label = str(subdomain or f"第 {index + 1} 条记录")
+    label = raw.get('full_domain') or raw.get('subdomain') or position
+    view = DomainView(
+        label=label,
+        subdomain_id=parse_id(raw.get('id')),
+        # 默认按 False（需要续期）处理：接口返回无法识别时，宁可多撞一次 422，
+        # 也不能把真正需要续期的域名误判成永不过期而永久跳过。
+        never_expires=to_bool(raw.get('never_expires', 0), default=False,
+                              label=f"{label}.never_expires"),
+        expires_raw=raw.get('expires_at'),
+        status=raw.get('status'),
+    )
 
-    status = str(raw.get("status") or "unknown").strip().lower()
-    never_expires = to_bool(raw.get("never_expires"), default=False,
-                            label=f"{label}.never_expires")
+    if view.subdomain_id is None:
+        view.problem = "响应缺少 id 字段，无法续期"
+        return view
 
-    expires_raw = raw.get("expires_at")
-    expires_at = parse_expiry(expires_raw, tz)
-    problem = None
+    if view.never_expires:
+        return view
 
-    if subdomain_id is None:
-        problem = "缺少有效的域名 ID，无法续期"
-    elif status not in NORMAL_STATUSES:
-        problem = f"状态为 {raw.get('status')!r}，不是正常状态"
-
-    if not never_expires and expires_raw and expires_at is None:
-        problem = f"无法解析到期时间 {expires_raw!r}"
-
-    days_remaining = (expires_at - now.astimezone(tz)).days if expires_at else None
-    return DomainView(subdomain_id, label, status, expires_raw, expires_at,
-                      never_expires, days_remaining, problem)
+    view.expires_at = parse_expiry(view.expires_raw, tz)
+    if view.expires_at is not None:
+        view.days_remaining = (view.expires_at - now).days
+    return view
 
 
-def describe_remaining(view, now):
-    if view.expires_at is None:
-        return "到期时间未知"
-    days = (view.expires_at - now.astimezone(view.expires_at.tzinfo)).days
-    if days < 0:
-        return f"已过期 {-days} 天"
-    return f"剩余 {days} 天"
+def decide(view, threshold_days, now=None):
+    """判定该域名本次要做什么：invalid / never / skip / renew。
 
-
-def decide(view, threshold_days, now):
-    """决定域名操作：invalid / never / skip / renew。"""
+    判定用精确时间差，不用 days_remaining：后者是 .days 向下取整的结果，
+    会把「剩余 180 天 0 小时 30 分」压成 180，再用 >= 180 判成跳过——
+    而文档写的是「Renewal window: Opens 180 days before the expiration」，
+    此刻窗口其实已经开了。
+    """
     if view.problem:
         return 'invalid'
     if view.never_expires:
         return 'never'
-    if view.expires_at is None:
-        view.problem = "到期时间缺失，无法安全判断是否应续期"
-        return 'invalid'
-
-    days = (view.expires_at - now.astimezone(view.expires_at.tzinfo)).days
-    if days < 0:
-        view.problem = f"域名已过期（{describe_remaining(view, now)}），跳过自动续期"
-        return 'invalid'
-    if days > threshold_days:
+    if view.expires_at is not None and now is not None:
+        if view.expires_at - now > timedelta(days=threshold_days):
+            return 'skip'
+        return 'renew'
+    # 没有 now 时退回按整数天判定（保持纯函数可测）
+    if view.days_remaining is not None and view.days_remaining >= threshold_days:
         return 'skip'
+    # 剩余天数未知时也尝试续期：宁可撞一次 422，也不要漏掉真要过期的域名
     return 'renew'
 
 
-def expiry_line(view, now):
-    if view.never_expires:
-        expiry = "永不过期"
-    elif view.expires_at:
-        expiry = view.expires_at.strftime('%Y-%m-%d %H:%M:%S')
-    else:
-        expiry = f"无法识别（原始值：{view.expires_raw!r}）"
+def days_left(view, now):
+    """剩余天数，向上取整（未满一天也算一天）；已过期返回负数。"""
+    if view.expires_at is None:
+        return None
+    delta = view.expires_at - now
+    if delta.total_seconds() < 0:
+        # 已过期：向下取整，避免 -0.5 天显示成 0
+        return -(-delta).days if delta.seconds else delta.days
+    return -((-delta) // timedelta(days=1))
 
-    remaining = describe_remaining(view, now) if not view.never_expires else "永久"
-    status = view.status or "unknown"
-    note = f"；异常：{view.problem}" if view.problem else ""
-    return f"- {view.label} | 状态：{status} | 到期：{expiry} | {remaining}{note}"
+
+def describe_remaining(view, now):
+    """报告里的一句话剩余时间，过期域名显示「已过期 N 天」。"""
+    if view.expires_at is None:
+        return None
+    delta = view.expires_at - now
+    if delta.total_seconds() < 0:
+        return f"已过期 {-delta.days}天"
+    return f"剩余 {days_left(view, now)}天"
+
+
+def status_note(view):
+    """异常状态的附加说明，拼在报告行尾；正常状态返回空串。"""
+    abnormal = view.status_abnormal
+    if not abnormal:
+        return ""
+    if abnormal.lower() == 'expired':
+        return "  ⚠️ 域名状态 expired（已过期，续期窗口可能已关闭）"
+    return f"  ⚠️ 域名状态 {abnormal}"
 
 
 def mark(view, line):
-    """在续期结果行后补上域名 ID，便于到 DNSHE 后台定位。"""
-    return f"{line} [ID={view.subdomain_id}]" if view.subdomain_id is not None else line
+    """给一行报告追加状态说明。"""
+    return f"{line}{status_note(view)}"
 
 
-def format_charge(value):
-    if value is None:
-        return "扣除积分未知"
+def expiry_line(view, now=None):
+    if view.problem:
+        return mark(view, f"{view.label}: 到期时间 未知（记录异常）")
+    if view.never_expires:
+        return mark(view, f"{view.label}: 到期时间 永久有效")
+    remaining = describe_remaining(view, now) if now is not None else None
+    if remaining:
+        return mark(view, f"{view.label}: 到期时间 {view.expires_raw} ({remaining})")
+    if view.days_remaining is not None:
+        return mark(view, f"{view.label}: 到期时间 {view.expires_raw} (剩余 {view.days_remaining}天)")
+    if view.expires_raw:
+        return mark(view, f"{view.label}: 到期时间 {view.expires_raw} (无法解析剩余天数)")
+    return mark(view, f"{view.label}: 到期时间 未知")
+
+
+def format_charge(charged):
+    """charged_amount 为 0 表示免费续期。"""
     try:
-        amount = float(value)
+        if float(charged) == 0:
+            return "免费"
     except (TypeError, ValueError):
-        return f"扣除积分 {value}"
-    if amount.is_integer():
-        return f"扣除积分 {int(amount)}"
-    return f"扣除积分 {amount:g}"
+        # 字段缺失或类型异常时不要把 None 直接拼进报告
+        return "费用未知"
+    return f"消耗 {charged} 积分"
 
 
 def quota_line(quota):
-    """兼容不同版本积分字段；查不到字段时保留原始结构，避免虚报为 0。"""
-    if not isinstance(quota, dict):
-        return f"账户积分：查询结果格式异常（{str(quota)[:120]}）"
-
-    available = next((quota[k] for k in (
-        'available', 'balance', 'remaining', 'credits', 'points', 'quota'
-    ) if quota.get(k) is not None), None)
-    total = next((quota[k] for k in ('total', 'total_quota', 'limit')
-                  if quota.get(k) is not None), None)
-
+    """把 quota 响应渲染成一行摘要，积分见底时给出显式警示。"""
+    available = quota.get('available')
     parts = [f"可用 {available}" if available is not None else None,
-             f"总额 {total}" if total is not None else None]
+             f"已用 {quota.get('used')}" if quota.get('used') is not None else None,
+             f"总额 {quota.get('total')}" if quota.get('total') is not None else None]
     summary = "，".join(p for p in parts if p) or str(quota)[:120]
 
     try:
@@ -768,7 +903,7 @@ class CompositeNotifier:
     """把报告分发给所有已配置的通知通道。
 
     失败语义：只要有「任一」通道送达就算送达。一个通知通道成功、另一个
-    通道偶发失败时，不应把已成功送达的整轮运行误报为失败。全部通道都失败才算推送失败。
+    通道偶发失败时，不应把已成功送达的整轮运行误报为失败。
 
     - 未配置任何通道：提示后视为成功
     - 所有已配置通道都失败：返回 False，让进程以退出码 1 收场
@@ -930,6 +1065,7 @@ def run(config, client, notifier, now=None):
     # 推送失败同样算失败：报告发不出去等于没有告警通道
     pushed = notifier.send(message)
     return 0 if (not has_failure and pushed) else 1
+
 
 
 class CaptureNotifier:
