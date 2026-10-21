@@ -91,7 +91,7 @@
 | -------------------- | ----------------------- | ------------------- |
 | ~~`DNSHE_API_KEY`~~ | ~~DNSHE 的 API Key~~ | ~~`cfsd_xxxxxxxxxx`~~ |
 | ~~`DNSHE_API_SECRET`~~ | ~~DNSHE 的 API Secret~~ | ~~`yyyyyyyyyyyy`~~ |
-| `WECHAT_API_URL`     | 自建微信接口CF帮定域名 | `https://wx.djcf.pp.ua/wxsend`如何自建微信接口教程1.https://fkjun.com/p/wxpush/  2.https://fkjun.com/p/esa/ | # 
+| `WECHAT_API_URL`     | (可选)自建微信接口CF帮定域名 | `https://wx.djcf.pp.ua/wxsend`如何自建微信接口教程1.https://fkjun.com/p/wxpush/  2.https://fkjun.com/p/esa/ | # 
 | `WECHAT_AUTH_TOKEN`  | (可选) 自建微信自定义的密码 | `123` |
 | `TELEGRAM_BOT_TOKEN` | (可选) Telegram Bot Token | `123456:ABC-DEF...` |
 | `TELEGRAM_CHAT_ID`   | (可选) Telegram 目标聊天 ID | `123456789` |
