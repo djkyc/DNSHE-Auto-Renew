@@ -745,16 +745,19 @@ class WeChatNotifier:
             return True
 
         try:
+            # 提取报告的第一行或简要摘要作为微信卡片的“告警内容”标题
+            first_line = content.split('\n')[0] if content else "DNSHE 域名续期通知"
+
             resp = self.session.post(
                 self.api_url,
                 headers={
                     "Authorization": self.auth_token,
                     "Content-Type": "application/json",
                 },
-                # 【修改这里】：加上接口需要的 title 字段
+                # 【修改这里】：把摘要给 title，把完整长报告给 content
                 json={
-                    "title": "DNSHE 域名自动续期报告",
-                    "content": content
+                    "title": first_line,     # 显示在微信卡片的摘要/告警内容里
+                    "content": content       # 完整的续期报告明细，点进详情可见
                 },
                 timeout=REQUEST_TIMEOUT,
             )
