@@ -37,9 +37,9 @@ jobs:
           # DNSHE 多账号配置（必需）
           DNSHE_ACCOUNTS: ${{ secrets.DNSHE_ACCOUNTS }}
 
-          # 通知渠道
-          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
-          PUSHPLUS_TOPIC: ${{ secrets.PUSHPLUS_TOPIC }}
+          # 自建微信/TG通知渠道
+          WECHAT_API_URL: ${{ vars.WECHAT_API_URL }}
+          WECHAT_AUTH_TOKEN: ${{ secrets.WECHAT_AUTH_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
