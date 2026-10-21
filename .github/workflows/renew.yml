@@ -31,13 +31,14 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt
+        
       - name: Check WeChat configuration
         env:
-          WECHAT_API_URL: ${{ vars.WECHAT_API_URL }}
+          WECHAT_API_URL: ${{ secrets.WECHAT_API_URL }}
           WECHAT_AUTH_TOKEN: ${{ secrets.WECHAT_AUTH_TOKEN }}
         run: |
           if [ -z "$WECHAT_API_URL" ]; then
-            echo "::error::WECHAT_API_URL 为空，请检查 GitHub Actions Variables"
+            echo "::error::WECHAT_API_URL 为空，请检查 GitHub Actions Secrets"
           else
             echo "WECHAT_API_URL：已读取"
           fi
@@ -54,12 +55,12 @@ jobs:
           DNSHE_ACCOUNTS: ${{ secrets.DNSHE_ACCOUNTS }}
 
           # 自建微信/TG通知渠道
-          WECHAT_API_URL: ${{ vars.WECHAT_API_URL }}
+          WECHAT_API_URL: ${{ secrets.WECHAT_API_URL }}
           WECHAT_AUTH_TOKEN: ${{ secrets.WECHAT_AUTH_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
-          # 可选配置
+          # 可选配置（如果这些也存在了 Secrets 里面，请把下面的 vars 也改成 secrets）
           DNSHE_RENEW_THRESHOLD_DAYS: ${{ vars.DNSHE_RENEW_THRESHOLD_DAYS }}
           DNSHE_MIN_INTERVAL: ${{ vars.DNSHE_MIN_INTERVAL }}
           DNSHE_TZ_OFFSET: ${{ vars.DNSHE_TZ_OFFSET }}
