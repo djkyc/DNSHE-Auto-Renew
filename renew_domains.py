@@ -745,8 +745,12 @@ class WeChatNotifier:
             return True
 
         try:
-            # 自定义显示在微信卡片“告警内容”里的摘要文字
-            custom_summary = "DNSHE 域名自动续期报告"
+            # 1. 固定标题
+            fixed_title = "DNSHE 域名自动续期报告"
+
+            # 2. 从正文(content)中提取并清洗出干净的文本作为摘要预览（去除 Markdown 符号，避免渲染异常或空白）
+            clean_content = str(content).replace("*", "").replace("`", "").replace("#", "").replace("\n", " ")
+            card_summary = clean_content[:80] + ("..." if len(clean_content) > 80 else "")
 
             resp = self.session.post(
                 self.api_url,
@@ -754,13 +758,13 @@ class WeChatNotifier:
                     "Authorization": self.auth_token,
                     "Content-Type": "application/json",
                 },
-                # 【多字段兼容】：把所有可能的摘要字段名全部带上
+                # 【多字段兼容】：标题固定，摘要使用动态清洗后的正文内容
                 json={
                     "token": self.auth_token,
-                    "title": custom_summary,
-                    "text": custom_summary,
-                    "summary": custom_summary,
-                    "description": custom_summary,
+                    "title": fixed_title,
+                    "text": card_summary,
+                    "summary": card_summary,
+                    "description": card_summary,
                     "content": content
                 },
                 timeout=REQUEST_TIMEOUT,
@@ -774,7 +778,6 @@ class WeChatNotifier:
         except Exception as e:
             warn(f"自建微信推送异常: {redact(e, (self.auth_token,))}")
             return False
-
 
 def utf16_len(text):
     """按 UTF-16 码元计长度。
